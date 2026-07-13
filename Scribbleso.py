@@ -1,4 +1,5 @@
 import html
+import json
 import os
 import re
 import sys
@@ -10,6 +11,9 @@ from tkinter import filedialog, ttk
 
 DEFAULT_FONT_SIZE = 11
 DESCRIPTION_FONT_SIZE = 9
+SETTINGS_FILE = (
+    Path(os.environ.get("APPDATA") or Path.home()) / "Scribbleso" / "settings.json"
+)
 ANONYMIZE_PATTERN = re.compile(
     r"""
     (?P<email>\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b)
@@ -127,23 +131,25 @@ THEME_PALETTES = {
         "text": "#111827",
     },
     "dark": {
-        "accent": "#38bdf8",
-        "accent_active": "#0ea5e9",
-        "bg": "#0f172a",
-        "border": "#334155",
-        "button": "#263449",
-        "button_active": "#334155",
-        "error": "#fca5a5",
-        "input_bg": "#0b1220",
-        "input_fg": "#e5e7eb",
-        "muted": "#94a3b8",
-        "panel": "#111827",
-        "select_bg": "#075985",
+        "accent": "#2dd4bf",
+        "accent_active": "#14b8a6",
+        "bg": "#111214",
+        "border": "#34383f",
+        "button": "#25282d",
+        "button_active": "#30343a",
+        "error": "#fb7185",
+        "input_bg": "#15171a",
+        "input_fg": "#f4f4f5",
+        "muted": "#a1a1aa",
+        "panel": "#1b1d21",
+        "select_bg": "#0f766e",
         "select_fg": "#f8fafc",
-        "success": "#6ee7b7",
-        "text": "#e5e7eb",
+        "success": "#34d399",
+        "text": "#f4f4f5",
     },
 }
+THEME_MODE_TO_KEY = {"Jasny": "light", "Ciemny": "dark"}
+THEME_KEY_TO_MODE = {"light": "Jasny", "dark": "Ciemny"}
 
 
 def px_font(size_px, family="Segoe UI"):
@@ -159,20 +165,63 @@ class ScribblesoApp(tk.Tk):
         self.geometry("1040x720")
         self.minsize(900, 620)
 
-        self.theme_mode = tk.StringVar(value="Jasny")
-        self.palette = THEME_PALETTES["light"]
+        self.settings = self._load_settings()
+        self.theme_mode = tk.StringVar(value=self._settings_theme_mode())
+        self.palette = THEME_PALETTES[self._theme_key()]
         self.anonymize_enabled = tk.BooleanVar(value=True)
         self.sql_enabled = tk.BooleanVar(value=False)
         self.cnk_enabled = tk.BooleanVar(value=False)
         self.cnk_count = tk.IntVar(value=1)
         self.cnk_items = []
-        self.output_file_path = tk.StringVar(value="")
+        self.output_file_path = tk.StringVar(value=self._settings_output_file_path())
         self.file_status = tk.StringVar(value="")
 
         self._configure_style()
         self._build_layout()
         self._bind_updates()
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._update_preview()
+
+    def _load_settings(self):
+        try:
+            settings = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return settings if isinstance(settings, dict) else {}
+
+    def _settings_theme_mode(self):
+        theme = self.settings.get("theme")
+        if theme in THEME_KEY_TO_MODE:
+            return THEME_KEY_TO_MODE[theme]
+        if theme in THEME_MODE_TO_KEY:
+            return theme
+        return "Jasny"
+
+    def _settings_output_file_path(self):
+        path = self.settings.get("output_file_path", "")
+        return path if isinstance(path, str) else ""
+
+    def _theme_key(self):
+        return THEME_MODE_TO_KEY.get(self.theme_mode.get(), "light")
+
+    def _save_settings(self):
+        settings = {
+            "theme": self._theme_key(),
+            "output_file_path": self.output_file_path.get().strip(),
+        }
+        SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        SETTINGS_FILE.write_text(
+            json.dumps(settings, indent=2, ensure_ascii=True),
+            encoding="utf-8",
+        )
+
+    def _on_close(self):
+        try:
+            self._save_settings()
+        except OSError:
+            pass
+        finally:
+            self.destroy()
 
     def _configure_style(self):
         palette = self.palette
@@ -296,11 +345,7 @@ class ScribblesoApp(tk.Tk):
         )
 
     def _change_theme(self, _event=None):
-        self.palette = (
-            THEME_PALETTES["dark"]
-            if self.theme_mode.get() == "Ciemny"
-            else THEME_PALETTES["light"]
-        )
+        self.palette = THEME_PALETTES[self._theme_key()]
         self._configure_style()
         self._apply_theme_to_widgets()
 
@@ -1056,6 +1101,9 @@ class ScribblesoApp(tk.Tk):
         return data.decode("utf-8", errors="replace"), "utf-8"
 
     def _append_to_docx(self, path, sections):
+        if self._append_to_open_word_document(path, sections):
+            return
+
         try:
             self._append_to_docx_file(path, sections)
         except OSError as exc:
@@ -1103,6 +1151,7 @@ class ScribblesoApp(tk.Tk):
         except ImportError:
             return False
 
+        target_document_found = False
         pythoncom.CoInitialize()
         try:
             try:
@@ -1114,10 +1163,16 @@ class ScribblesoApp(tk.Tk):
             if document is None:
                 return False
 
-            document.Activate()
+            target_document_found = True
             self._append_sections_to_word_document(document, sections)
             document.Save()
             return True
+        except Exception as exc:
+            if target_document_found:
+                raise RuntimeError(
+                    f"Nie udało się dopisać do otwartego dokumentu Word: {exc}"
+                ) from exc
+            return False
         finally:
             pythoncom.CoUninitialize()
 
@@ -1135,35 +1190,43 @@ class ScribblesoApp(tk.Tk):
         return os.path.normcase(os.path.abspath(str(path)))
 
     def _append_sections_to_word_document(self, document, sections):
+        document.Activate()
+        selection = document.Application.Selection
         if self._word_document_has_text(document):
             self._trim_word_trailing_empty_paragraphs(document)
-            self._append_word_paragraph(document, "")
-            self._append_word_paragraph(document, "")
+            self._move_word_selection_to_end(selection)
+            self._append_word_paragraph(selection, "")
+            self._append_word_paragraph(selection, "")
+        else:
+            self._move_word_selection_to_end(selection)
 
         for tag, text in sections:
             size = DESCRIPTION_FONT_SIZE if tag == "description" else DEFAULT_FONT_SIZE
             if not text:
-                self._append_word_paragraph(document, "")
+                self._append_word_paragraph(selection, "")
                 continue
 
             for line in text.split("\n"):
-                self._append_word_paragraph(document, line, tag=tag, size=size)
+                self._append_word_paragraph(selection, line, tag=tag, size=size)
 
-    def _append_word_paragraph(self, document, text, tag="default", size=DEFAULT_FONT_SIZE):
+    def _move_word_selection_to_end(self, selection):
+        wd_story = 6
+        selection.EndKey(wd_story)
+
+    def _append_word_paragraph(self, selection, text, tag="default", size=DEFAULT_FONT_SIZE):
         wd_style_normal = -1
         wd_style_heading_1 = -2
-        end = max(0, document.Content.End - 1)
-        start = end
-        document.Range(end, end).InsertAfter(f"{text}\r")
 
-        paragraph = document.Range(start, start + len(text) + 1).Paragraphs(1)
         if tag == "title":
-            paragraph.Style = wd_style_heading_1
-            return
+            selection.Style = wd_style_heading_1
+        else:
+            selection.Style = wd_style_normal
+            selection.Font.Name = "Segoe UI"
+            selection.Font.Size = size
 
-        paragraph.Style = wd_style_normal
-        paragraph.Range.Font.Name = "Segoe UI"
-        paragraph.Range.Font.Size = size
+        if text:
+            selection.TypeText(text)
+        selection.TypeParagraph()
 
     def _word_document_has_text(self, document):
         text = document.Content.Text.replace("\r", "").replace("\x07", "").strip()

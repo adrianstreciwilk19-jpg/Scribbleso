@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_submodules
 
-hiddenimports = ['docx', 'docx.shared', 'lxml', 'win32com', 'win32com.client', 'pythoncom', 'pywintypes']
+hiddenimports = ['docx', 'docx.shared', 'lxml', 'win32com', 'win32com.client', 'pythoncom', 'pywintypes', 'win32timezone']
 hiddenimports += collect_submodules('docx')
 
 
