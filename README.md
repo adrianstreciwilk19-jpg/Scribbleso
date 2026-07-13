@@ -1,6 +1,6 @@
 # Scribbleso
 
-Desktopowa aplikacja Tkinter do przygotowywania tekstu zgloszenia, anonimizacji danych oraz kopiowania albo dopisywania wyniku do plikow `.txt` i `.docx`.
+Desktopowa aplikacja do przygotowywania tekstu zgloszenia, anonimizacji danych oraz kopiowania albo dopisywania wyniku do plikow `.txt` i `.docx`.
 
 ## Uruchomienie z kodu
 
